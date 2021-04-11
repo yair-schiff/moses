@@ -225,3 +225,22 @@ class VAE(nn.Module):
                 new_x.append(x[i, :end_pads[i]])
 
             return [self.tensor2string(i_x) for i_x in new_x]
+
+    def get_latent_distribution(self, x_smiles):
+        """Get the mu and logvar of the conditional latent distribution
+
+        :param x_smiles: list of tensors of longs, input sentence
+        :return: (n_batch, d_z) of floats, sample of latent vector z
+        :return: dict with 'mu' and 'logvar' as keys and their values as values
+        """
+        # Run the SMILES encoder
+        x_smiles = [self.x_emb(i_x) for i_x in x_smiles]
+        x_smiles = nn.utils.rnn.pack_sequence(x_smiles, enforce_sorted=False)
+
+        _, h_text = self.encoder_rnn(x_smiles, None)
+
+        h_text = h_text[-(1 + int(self.encoder_rnn.bidirectional)):]
+        h_text = torch.cat(h_text.split(1), dim=-1).squeeze(0)
+
+        mu, logvar = self.q_mu(h_text), self.q_logvar(h_text)
+        return {'mu': mu, 'logvar': logvar}
