@@ -72,7 +72,7 @@ def main(model, config):
             qed = QED.qed(mol)
             logP = Chem.Crippen.MolLogP(mol)
             sa = sascorer.calculateScore(mol)
-            annotated_data.append({'smiles': smi, 'embedding': embed, 'qed': qed, 'logp': logP, 'sa': sa})
+            annotated_data.append({'smiles': smi, 'embedding': embed.cpu(), 'qed': qed, 'logp': logP, 'sa': sa})
         torch.save(annotated_data, os.path.join(config.gen_save, f'moses_annotated_{data_name}.pt'))
 
 
