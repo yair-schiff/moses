@@ -1,4 +1,5 @@
 import random
+import re
 from multiprocessing import Pool
 from collections import UserList, defaultdict
 import numpy as np
@@ -11,7 +12,7 @@ from rdkit import Chem
 
 # https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader
 def set_torch_seed_to_all_gens(_):
-    seed = torch.initial_seed() % (2**32 - 1)
+    seed = torch.initial_seed() % (2 ** 32 - 1)
     random.seed(seed)
     np.random.seed(seed)
 
@@ -26,9 +27,11 @@ class SpecialTokens:
 class CharVocab:
     @classmethod
     def from_data(cls, data, *args, **kwargs):
+        pattern = "(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|\(|\)|\.|=|#|-|\+|\\\\|\/|:|~|@|\?|>|\*|\$|\%[0-9]{2}|[0-9])"
+        regex = re.compile(pattern)
         chars = set()
         for string in data:
-            chars.update(string)
+            chars.update(regex.findall(string))
 
         return cls(chars, *args, **kwargs)
 
@@ -38,7 +41,8 @@ class CharVocab:
             raise ValueError('SpecialTokens in chars')
 
         all_syms = sorted(list(chars)) + [ss.bos, ss.eos, ss.pad, ss.unk]
-
+        self.pattern = "(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|\(|\)|\.|=|#|-|\+|\\\\|\/|:|~|@|\?|>|\*|\$|\%[0-9]{2}|[0-9])"
+        self.regex = re.compile(self.pattern)
         self.ss = ss
         self.c2i = {c: i for i, c in enumerate(all_syms)}
         self.i2c = {i: c for i, c in enumerate(all_syms)}
@@ -75,7 +79,7 @@ class CharVocab:
         return self.i2c[id]
 
     def string2ids(self, string, add_bos=False, add_eos=False):
-        ids = [self.char2id(c) for c in string]
+        ids = [self.char2id(c) for c in self.regex.findall(string)]
 
         if add_bos:
             ids = [self.bos] + ids
@@ -153,7 +157,7 @@ class Logger(UserList):
 
     def save(self, path):
         df = pd.DataFrame(list(self))
-        df.to_csv(path, index=None)
+        df.to_csv(path, index=False)
 
 
 class LogPlotter:
@@ -232,8 +236,7 @@ def get_mol(smiles_or_mol):
 class StringDataset:
     def __init__(self, vocab, data):
         """
-        Creates a convenient Dataset with SMILES tokinization
-
+        Creates a convenient Dataset with SMILES tokenization
         Arguments:
             vocab: CharVocab instance for tokenization
             data (list): SMILES strings for the dataset
@@ -253,10 +256,8 @@ class StringDataset:
     def __getitem__(self, index):
         """
         Prepares torch tensors with a given SMILES.
-
         Arguments:
             index (int): index of SMILES in the original dataset
-
         Returns:
             A tuple (with_bos, with_eos, smiles), where
             * with_bos is a torch.long tensor of SMILES tokens with
@@ -274,19 +275,16 @@ class StringDataset:
         """
         Simple collate function for SMILES dataset. Joins a
         batch of objects from StringDataset into a batch
-
         Arguments:
             batch: list of objects from StringDataset
             pad: padding symbol, usually equals to vocab.pad
             return_data: if True, will return SMILES used in a batch
-
         Returns:
             with_bos, with_eos, lengths [, data] where
             * with_bos: padded sequence with BOS in the beginning
             * with_eos: padded sequence with EOS in the end
             * lengths: array with SMILES lengths in the batch
             * data: SMILES in the batch
-
         Note: output batch is sorted with respect to SMILES lengths in
             decreasing order, since this is a default format for torch
             RNN implementations
