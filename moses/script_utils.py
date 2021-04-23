@@ -64,6 +64,10 @@ def add_train_args(parser):
                             type=str,
                             help='Where to load the vocab; '
                                  'otherwise it will be evaluated')
+    common_arg.add_argument('--regression_annotations',
+                            type=str, default='',
+                            help='Underscore (\'_\') separated list of mol annotations to regress latent space on.' +
+                                 'Can be from the following list: logp, qed, sa. E.g., \'logp_qed\'.')
 
     return parser
 
