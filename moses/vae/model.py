@@ -3,10 +3,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class RegressionMLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.fc1 = nn.Linear(config.d_z, config.d_z // 2)
+        self.fc2 = nn.Linear(config.d_z // 2, 1)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        return self.fc2(x)
+
+
 class VAE(nn.Module):
     def __init__(self, vocab, config):
         super().__init__()
-
+        self.config = config
         self.vocabulary = vocab
         # Special symbols
         for ss in ('bos', 'eos', 'unk', 'pad'):
@@ -71,6 +82,13 @@ class VAE(nn.Module):
             self.encoder,
             self.decoder
         ])
+        try:
+            if self.config.regression_annotations:
+                self.regression_mlps = nn.ModuleDict({f'{anno}_mlp': RegressionMLP(self.config)
+                                                      for anno in self.config.regression_annotations.split('_')})
+        except AttributeError:  # This is needed for backwards compatibility with vanilla vaes
+            self.config.regression_annotations = None
+
 
     @property
     def device(self):
@@ -98,13 +116,18 @@ class VAE(nn.Module):
         :return: float, kl term component of loss
         :return: float, recon component of loss
         """
-
+        if self.config.regression_annotations:
+            x_smiles = x['smiles']
         # Encoder: x -> z, kl_loss
-        z, kl_loss = self.forward_encoder(x)
+        z, kl_loss = self.forward_encoder(x_smiles)
 
         # Decoder: x, z -> recon_loss
-        recon_loss = self.forward_decoder(x, z)
-
+        recon_loss = self.forward_decoder(x_smiles, z)
+        if self.config.regression_annotations:
+            regression_losses = {}
+            for anno in self.config.regression_annotations.split('_'):
+                regression_losses[anno] = F.mse_loss(self.regression_mlps[f'{anno}_mlp'](z), x[anno])
+            return kl_loss, recon_loss, regression_losses
         return kl_loss, recon_loss
 
     def forward_encoder(self, x):

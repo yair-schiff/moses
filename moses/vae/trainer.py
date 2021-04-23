@@ -14,16 +14,23 @@ class VAETrainer(MosesTrainer):
         self.config = config
 
     def get_vocabulary(self, data):
+        if self.config.regression_annotations:
+            return OneHotVocab.from_data(data.data['smiles'])
         return OneHotVocab.from_data(data)
 
     def get_collate_fn(self, model):
         device = self.get_collate_device(model)
 
         def collate(data):
-            data.sort(key=len, reverse=True)
-            tensors = [model.string2tensor(string, device=device)
-                       for string in data]
+            if self.config.regression_annotations:
+                sorted_data = sorted(data, key=lambda x: len(x['smiles']), reverse=True)
+                return_batch = {'smiles': [model.string2tensor(d['smiles'], device=device) for d in sorted_data]}
+                for i, anno in enumerate(self.config.regression_annotations.split('_')):
+                    return_batch[anno] = torch.stack([torch.FloatTensor([d[anno]]) for d in sorted_data], dim=0)
+                return return_batch
 
+            data.sort(key=len, reverse=True)
+            tensors = [model.string2tensor(string, device=device) for string in data]
             return tensors
 
         return collate
@@ -33,16 +40,26 @@ class VAETrainer(MosesTrainer):
             model.eval()
         else:
             model.train()
-
+        if self.config.regression_annotations:
+            regression_losses_values = {anno: CircularBuffer(self.config.n_last)
+                                        for anno in self.config.regression_annotations.split('_')}
         kl_loss_values = CircularBuffer(self.config.n_last)
         recon_loss_values = CircularBuffer(self.config.n_last)
         loss_values = CircularBuffer(self.config.n_last)
         for input_batch in tqdm_data:
-            input_batch = tuple(data.to(model.device) for data in input_batch)
-
-            # Forward
-            kl_loss, recon_loss = model(input_batch)
-            loss = kl_weight * kl_loss + recon_loss
+            if self.config.regression_annotations:
+                input_batch = {k: v.to(model.device) if k != 'smiles' else v for k, v in input_batch.items()}
+                input_batch['smiles'] = tuple(tuple(data.to(model.device) for data in input_batch['smiles']))
+                # Forward
+                kl_loss, recon_loss, regressions_losses = model(input_batch)
+                loss = kl_weight * kl_loss + recon_loss
+                for rl in regressions_losses.values():
+                    loss += rl
+            else:
+                input_batch = tuple(data.to(model.device) for data in input_batch)
+                # Forward
+                kl_loss, recon_loss = model(input_batch)
+                loss = kl_weight * kl_loss + recon_loss
 
             # Backward
             if optimizer is not None:
@@ -55,6 +72,9 @@ class VAETrainer(MosesTrainer):
             # Log
             kl_loss_values.add(kl_loss.item())
             recon_loss_values.add(recon_loss.item())
+            if self.config.regression_annotations:
+                for k, v in regressions_losses.items():
+                    regression_losses_values[k].add(v.item())
             loss_values.add(loss.item())
             lr = (optimizer.param_groups[0]['lr']
                   if optimizer is not None
@@ -64,10 +84,14 @@ class VAETrainer(MosesTrainer):
             kl_loss_value = kl_loss_values.mean()
             recon_loss_value = recon_loss_values.mean()
             loss_value = loss_values.mean()
+            if self.config.regression_annotations:
+                regression_loss_postfix = ';'.join([f'rl_{k}={v.mean():.5f}' for k, v in regression_losses_values.items()])
             postfix = [f'loss={loss_value:.5f}',
                        f'(kl={kl_loss_value:.5f}',
-                       f'recon={recon_loss_value:.5f})',
-                       f'klw={kl_weight:.5f} lr={lr:.5f}']
+                       f'recon={recon_loss_value:.5f}',
+                       f'{regression_loss_postfix})' if self.config.regression_annotations else ')',
+                       f'klw={kl_weight:.5f} lr={lr:.5f}',
+                       ]
             tqdm_data.set_postfix_str(' '.join(postfix))
 
         postfix = {
@@ -78,7 +102,9 @@ class VAETrainer(MosesTrainer):
             'recon_loss': recon_loss_value,
             'loss': loss_value,
             'mode': 'Eval' if optimizer is None else 'Train'}
-
+        if self.config.regression_annotations:
+            for k, v in regression_losses_values.items():
+                postfix[f'reg_{k}_loss'] = v.mean()
         return postfix
 
     def get_optim_params(self, model):
