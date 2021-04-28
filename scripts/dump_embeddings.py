@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import pandas as pd
 import torch
 from rdkit import Chem
 from rdkit.Chem import QED
@@ -52,32 +53,55 @@ def get_embeddings(model, config, data, data_name):
     model.eval()
     data_loader = tqdm(get_dataloader(model, data, config), desc=f'{data_name.capitalize()} embeddings')
     smiles_embeddings = {}
+    decoded_smiles = {}
     with torch.no_grad():
         for input_batch in data_loader:
             tensors, smiles = input_batch
             tensors = tuple(data.to(model.device) for data in tensors)
             latent_distribution = model.get_latent_distribution(tensors)
+            decoded = model.sample(n_batch=latent_distribution['mu'].shape[0],
+                                   z=latent_distribution['mu'],
+                                   decoding=config.decoding)
             for i, smi in enumerate(smiles):
                 smiles_embeddings[smi] = latent_distribution['mu'][i]
-    return smiles_embeddings
+                decoded_smiles[smi] = decoded[i]
+    return smiles_embeddings, decoded_smiles
 
 
 def main(model, config):
-    for data_name in ['train', 'test', 'test_scaffolds']:
+    data_file_prefix = f'{config.model_load.split("/")[-3]}_ep{config.model_load.split("/")[-1].split("_")[-1][:-3]}'
+    data_file_prefix += f'_{config.decoding}'
+    for data_name in ['test', 'train', 'test_scaffolds']:
         data = get_dataset(data_name)
-        embeddings = get_embeddings(model, config, data, data_name)
+        embeddings, decoded = get_embeddings(model, config, data, data_name)
         annotated_data = []
         for smi, embed in tqdm(embeddings.items(), desc=f'{data_name.capitalize()} annotations'):
             mol = Chem.MolFromSmiles(smi)
             qed = QED.qed(mol)
             logP = Chem.Crippen.MolLogP(mol)
             sa = sascorer.calculateScore(mol)
-            annotated_data.append({'smiles': smi, 'embedding': embed.cpu(), 'qed': qed, 'logp': logP, 'sa': sa})
-        torch.save(annotated_data, os.path.join(config.gen_save, f'moses_annotated_{data_name}.pt'))
+            decoded_mol = Chem.MolFromSmiles(decoded[smi])
+            if decoded_mol:  # Check if the decoded SMILES string produced a valid molecule
+                decoded_qed = QED.qed(decoded_mol)
+                decoded_logP = Chem.Crippen.MolLogP(decoded_mol)
+                decoded_sa = sascorer.calculateScore(decoded_mol)
+                decoded_valid = True
+            else:
+                decoded_qed = -9999
+                decoded_logP = -9999
+                decoded_sa = -9999
+                decoded_valid = False
+            annotated_data.append({'smiles': smi, 'qed': qed, 'logp': logP, 'sa': sa,
+                                   'embedding': embed.cpu(), 'decoded_valid': decoded_valid,
+                                   'decoded_smiles': decoded[smi], 'decoded_qed': decoded_qed,
+                                   'decoded_logp': decoded_logP, 'decoded_sa': decoded_sa,
+                                   })
+        torch.save(annotated_data, os.path.join(config.gen_save, f'{data_file_prefix}_moses_annotated_{data_name}.pt'))
 
 
 if __name__ == "__main__":
     pars = get_parser()
     model_type = sys.argv[1]
     conf = pars.parse_args()
+    set_seed(conf.seed)
     main(model_type, conf)

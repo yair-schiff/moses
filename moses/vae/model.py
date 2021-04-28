@@ -3,10 +3,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class RegressionMLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.fc1 = nn.Linear(config.d_z, config.d_z // 2)
+        self.fc2 = nn.Linear(config.d_z // 2, 1)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        return self.fc2(x)
+
+
 class VAE(nn.Module):
     def __init__(self, vocab, config):
         super().__init__()
-
+        self.config = config
         self.vocabulary = vocab
         # Special symbols
         for ss in ('bos', 'eos', 'unk', 'pad'):
@@ -71,6 +82,13 @@ class VAE(nn.Module):
             self.encoder,
             self.decoder
         ])
+        try:
+            if self.config.regression_annotations:
+                self.regression_mlps = nn.ModuleDict({f'{anno}_mlp': RegressionMLP(self.config)
+                                                      for anno in self.config.regression_annotations.split('_')})
+        except AttributeError:  # This is needed for backwards compatibility with vanilla vaes
+            self.config.regression_annotations = None
+
 
     @property
     def device(self):
@@ -98,13 +116,20 @@ class VAE(nn.Module):
         :return: float, kl term component of loss
         :return: float, recon component of loss
         """
-
+        if self.config.regression_annotations:
+            x_smiles = x['smiles']
+        else:
+            x_smiles = x
         # Encoder: x -> z, kl_loss
-        z, kl_loss = self.forward_encoder(x)
+        z, kl_loss = self.forward_encoder(x_smiles)
 
         # Decoder: x, z -> recon_loss
-        recon_loss = self.forward_decoder(x, z)
-
+        recon_loss = self.forward_decoder(x_smiles, z)
+        if self.config.regression_annotations:
+            regression_losses = {}
+            for anno in self.config.regression_annotations.split('_'):
+                regression_losses[anno] = F.mse_loss(self.regression_mlps[f'{anno}_mlp'](z), x[anno])
+            return kl_loss, recon_loss, regression_losses
         return kl_loss, recon_loss
 
     def forward_encoder(self, x):
@@ -116,7 +141,7 @@ class VAE(nn.Module):
         """
 
         x = [self.x_emb(i_x) for i_x in x]
-        x = nn.utils.rnn.pack_sequence(x)
+        x = nn.utils.rnn.pack_sequence(x, enforce_sorted=False)
 
         _, h = self.encoder_rnn(x, None)
 
@@ -141,14 +166,12 @@ class VAE(nn.Module):
 
         lengths = [len(i_x) for i_x in x]
 
-        x = nn.utils.rnn.pad_sequence(x, batch_first=True,
-                                      padding_value=self.pad)
+        x = nn.utils.rnn.pad_sequence(x, batch_first=True, padding_value=self.pad)
         x_emb = self.x_emb(x)
 
         z_0 = z.unsqueeze(1).repeat(1, x_emb.size(1), 1)
         x_input = torch.cat([x_emb, z_0], dim=-1)
-        x_input = nn.utils.rnn.pack_padded_sequence(x_input, lengths,
-                                                    batch_first=True)
+        x_input = nn.utils.rnn.pack_padded_sequence(x_input, lengths, batch_first=True, enforce_sorted=False)
 
         h_0 = self.decoder_lat(z)
         h_0 = h_0.unsqueeze(0).repeat(self.decoder_rnn.num_layers, 1, 1)
@@ -176,7 +199,7 @@ class VAE(nn.Module):
         return torch.randn(n_batch, self.q_mu.out_features,
                            device=self.x_emb.weight.device)
 
-    def sample(self, n_batch, max_len=100, z=None, temp=1.0):
+    def sample(self, n_batch, max_len=100, z=None, temp=1.0, decoding='softmax'):
         """Generating n_batch samples in eval mode (`z` could be
         not on same device)
 
@@ -184,8 +207,10 @@ class VAE(nn.Module):
         :param max_len: max len of samples
         :param z: (n_batch, d_z) of floats, latent vector z or None
         :param temp: temperature of softmax
+        :param decoding: Either 'greedy' for greedy max decoding or 'softmax' for softmax decoding
         :return: list of tensors of strings, samples sequence x
         """
+        assert decoding in ['greedy', 'softmax'], 'Invalid decoding method provided. Only \'greedy\' or \'softmax\' allowed.'
         with torch.no_grad():
             if z is None:
                 z = self.sample_z_prior(n_batch)
@@ -212,8 +237,7 @@ class VAE(nn.Module):
                 o, h = self.decoder_rnn(x_input, h)
                 y = self.decoder_fc(o.squeeze(1))
                 y = F.softmax(y / temp, dim=-1)
-
-                w = torch.multinomial(y, 1)[:, 0]
+                w = torch.multinomial(y, 1)[:, 0] if decoding == 'softmax' else torch.argmax(y, dim=1)
                 x[~eos_mask, i] = w[~eos_mask]
                 i_eos_mask = ~eos_mask & (w == self.eos)
                 end_pads[i_eos_mask] = i + 1

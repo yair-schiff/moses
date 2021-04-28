@@ -2,8 +2,34 @@ import os
 import numpy as np
 import pandas as pd
 
+from torch.utils.data import Dataset
 
 AVAILABLE_SPLITS = ['train', 'test', 'test_scaffolds']
+AVAILABLE_ANNOTATIONS = ['logp', 'qed', 'sa']
+
+
+class AnnotatedMolecules(Dataset):
+    def __init__(self, path_to_csv, annotations):
+        self._path_to_csv = path_to_csv
+        df = pd.read_csv(path_to_csv)
+        self._data = {'smiles': df['SMILES'].tolist()}
+        self._annotations = annotations
+        for anno in annotations:
+            assert anno in AVAILABLE_ANNOTATIONS, f'Invalid annotation provided. Only {AVAILABLE_ANNOTATIONS} allowed.'
+            self._data[anno] = df[anno].tolist()
+
+    def __getitem__(self, index):
+        return_item = {'smiles': self._data['smiles'][index]}
+        for anno in self._annotations:
+            return_item[anno] = self._data[anno][index]
+        return return_item
+
+    def __len__(self):
+        return len(self._data['smiles'])
+
+    @property
+    def data(self):
+        return self._data
 
 
 def get_dataset(split='train'):

@@ -6,7 +6,7 @@ import rdkit
 
 from moses.script_utils import add_train_args, read_smiles_csv, set_seed
 from moses.models_storage import ModelsStorage
-from moses.dataset import get_dataset
+from moses.dataset import get_dataset, AnnotatedMolecules
 
 lg = rdkit.RDLogger.logger()
 lg.setLevel(rdkit.RDLogger.CRITICAL)
@@ -38,14 +38,18 @@ def main(model, config):
     # For CUDNN to work properly
     if device.type.startswith('cuda'):
         torch.cuda.set_device(device.index or 0)
-    if config.train_load is None:
-        train_data = get_dataset('train')
+    if config.regression_annotations:
+        train_data = AnnotatedMolecules(config.train_load, config.regression_annotations.split('_'))
+        val_data = AnnotatedMolecules(config.val_load, config.regression_annotations.split('_'))
     else:
-        train_data = read_smiles_csv(config.train_load)
-    if config.val_load is None:
-        val_data = get_dataset('test')
-    else:
-        val_data = read_smiles_csv(config.val_load)
+        if config.train_load is None:
+            train_data = get_dataset('train')
+        else:
+            train_data = read_smiles_csv(config.train_load)
+        if config.val_load is None:
+            val_data = get_dataset('test')
+        else:
+            val_data = read_smiles_csv(config.val_load)
     trainer = MODELS.get_model_trainer(model)(config)
 
     if config.vocab_load is not None:
