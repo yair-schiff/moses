@@ -81,12 +81,19 @@ def main(model, config):
             logP = Chem.Crippen.MolLogP(mol)
             sa = sascorer.calculateScore(mol)
             decoded_mol = Chem.MolFromSmiles(decoded[smi])
-            if decoded_mol:  # Check if the decoded SMILES string produced a valid molecule
-                decoded_qed = QED.qed(decoded_mol)
-                decoded_logP = Chem.Crippen.MolLogP(decoded_mol)
-                decoded_sa = sascorer.calculateScore(decoded_mol)
-                decoded_valid = True
-            else:
+            try:
+                if decoded_mol:  # Check if the decoded SMILES string produced a valid molecule
+                    decoded_qed = QED.qed(decoded_mol)
+                    decoded_logP = Chem.Crippen.MolLogP(decoded_mol)
+                    decoded_sa = sascorer.calculateScore(decoded_mol)
+                    decoded_valid = True
+                else:
+                    decoded_qed = -9999
+                    decoded_logP = -9999
+                    decoded_sa = -9999
+                    decoded_valid = False
+            except ValueError as e:
+                print(e)
                 decoded_qed = -9999
                 decoded_logP = -9999
                 decoded_sa = -9999
