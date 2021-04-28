@@ -1,0 +1,5 @@
+name,path
+VAE_regex_klw0.005,/speech7/multimodal/work/yschiff/GF-ICNN/data/molecule_vae_regex_klw0.005_ep044_moses_annotated_test.pt
+VAE_regex_klw0.01,/speech7/multimodal/work/yschiff/GF-ICNN/data/molecule_vae_regex_klw0.01_ep044_moses_annotated_test.pt
+VAE_regex,/speech7/multimodal/work/yschiff/GF-ICNN/data/molecule_vae_regex_ep024_moses_annotated_test.pt
+
